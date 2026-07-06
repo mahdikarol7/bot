@@ -3,6 +3,8 @@ import { getUser, createOrUpdateUser } from "../database/users.js";
 import { formatDate } from "../utils/format.js";
 import { setUserQuality, getUserQuality } from "../downloader/index.js";
 import { config } from "../config.js";
+import { getAllCachedEntries, removeCachedVideo, getCacheDir } from "../cache/index.js";
+import fs from "fs";
 
 export async function startCommand(ctx: Context): Promise<void> {
   const userId = ctx.from!.id;
@@ -43,7 +45,8 @@ export async function helpCommand(ctx: Context): Promise<void> {
       "/start - Welcome message\n" +
       "/status - Check your account\n" +
       "/myinfo - View your info\n" +
-      "/quality - Set video quality"
+      "/quality - Set video quality\n" +
+      "/clearcache - Clear download cache"
   );
 }
 
@@ -103,4 +106,23 @@ export async function qualityCommand(ctx: Context): Promise<void> {
 
   setUserQuality(userId, arg);
   await ctx.reply(`Quality set to ${arg}p for your next downloads.`);
+}
+
+export async function clearCacheCommand(ctx: Context): Promise<void> {
+  const entries = getAllCachedEntries();
+  if (entries.length === 0) {
+    await ctx.reply("Cache is empty.");
+    return;
+  }
+  let freed = 0;
+  for (const entry of entries) {
+    if (fs.existsSync(entry.file_path)) {
+      const stat = fs.statSync(entry.file_path);
+      freed += stat.size;
+      fs.unlinkSync(entry.file_path);
+    }
+    removeCachedVideo(entry.video_id);
+  }
+  const freedMB = (freed / (1024 * 1024)).toFixed(1);
+  await ctx.reply(`Cache cleared!\nRemoved ${entries.length} videos, freed ${freedMB}MB.`);
 }

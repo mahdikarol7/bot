@@ -224,6 +224,24 @@ async function compressVideo(filePath: string, onProgress?: (status: string) => 
   return compressedPath;
 }
 
+async function compressVideoLow(filePath: string): Promise<string> {
+  const compressedPath = filePath.replace(".mp4", "_low.mp4");
+  const duration = await getVideoDuration(filePath);
+  const targetBitrate = Math.floor((30 * 1024 * 8 * 0.9) / duration); // Target 30MB
+
+  await execFileAsync("ffmpeg", [
+    "-i", filePath,
+    "-b:v", `${targetBitrate}`,
+    "-b:a", "96k",
+    "-vf", "scale=-2:480",
+    "-movflags", "+faststart",
+    "-y",
+    compressedPath,
+  ], { timeout: 300000 });
+
+  return compressedPath;
+}
+
 async function getVideoDuration(filePath: string): Promise<number> {
   try {
     const { stdout } = await execFileAsync("ffprobe", [
@@ -264,18 +282,27 @@ export async function queueDownload(ctx: Context, url: string): Promise<void> {
       let cachedPathToSend = cached.file_path;
       let cachedNeedsCleanup = false;
       if (cached.file_size > TELEGRAM_MAX_SIZE) {
+        await ctx.reply("Video is large, compressing for Telegram...");
         try {
           cachedPathToSend = await compressVideo(cached.file_path);
           cachedNeedsCleanup = true;
-        } catch {
-          cachedPathToSend = cached.file_path;
+        } catch (compressErr) {
+          logger.error({ err: compressErr, userId }, "Compression failed for cached video");
+          // Try with lower bitrate as fallback
+          try {
+            cachedPathToSend = await compressVideoLow(cached.file_path);
+            cachedNeedsCleanup = true;
+          } catch {
+            await ctx.reply("Could not compress video. Try /quality 360 and download again.");
+            return;
+          }
         }
       }
       try {
         await ctx.api.sendVideo(ctx.chat!.id, new InputFile(cachedPathToSend), { caption });
       } catch (sendErr) {
         logger.error({ err: sendErr, userId }, "Failed to send cached video via Telegram");
-        await ctx.reply("Failed to send the cached video. Please try again.");
+        await ctx.reply("Failed to send the video. Please try /quality 360 and download again.");
       } finally {
         if (cachedNeedsCleanup && fs.existsSync(cachedPathToSend)) {
           fs.unlinkSync(cachedPathToSend);
