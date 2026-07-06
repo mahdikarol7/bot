@@ -27,7 +27,7 @@ const envSchema = z.object({
   DEFAULT_QUALITY: z
     .enum(["360", "480", "720", "1080"])
     .default("720"),
-  CACHE_MAX_SIZE_GB: z.coerce.number().positive().default(3),
+  CACHE_MAX_SIZE_GB: z.coerce.number().positive().default(0.5),
   CACHE_EXPIRE_DAYS: z.coerce.number().positive().default(7),
   CACHE_DIR: z.string().default("cache"),
 });
