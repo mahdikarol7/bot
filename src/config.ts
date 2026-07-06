@@ -17,7 +17,7 @@ const envSchema = z.object({
     ),
   DATA_DIR: z.string().default("./data"),
   MAX_CONCURRENT_DOWNLOADS: z.coerce.number().int().positive().default(3),
-  MAX_FILE_SIZE_MB: z.coerce.number().int().positive().default(150),
+  MAX_FILE_SIZE_MB: z.coerce.number().int().positive().default(50),
   DOWNLOAD_TIMEOUT_SEC: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(3600000),

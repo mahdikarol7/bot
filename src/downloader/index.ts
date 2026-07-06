@@ -1,15 +1,10 @@
 import fs from "fs";
 import path from "path";
-import { execFile } from "child_process";
-import { promisify } from "util";
 import { Context, InputFile } from "grammy";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { downloadVideo } from "./ytdlp.js";
 import { validateYouTubeUrl } from "./validator.js";
-
-const execFileAsync = promisify(execFile);
-const TELEGRAM_MAX_SIZE = 50 * 1024 * 1024; // 50MB Telegram limit
 import {
   createOrUpdateUser,
   incrementDownloadCount,
@@ -121,37 +116,16 @@ async function executeDownload(job: DownloadJob): Promise<void> {
 
     const caption = `${result.title}\n\nDuration: ${formatDuration(result.duration)} | Size: ${formatSize(result.fileSize)}`;
 
-    let filePathToSend = result.filePath;
-    let needsCleanup = false;
-
-    if (result.fileSize > TELEGRAM_MAX_SIZE) {
-      try {
-        filePathToSend = await compressVideo(result.filePath, async (status) => {
-          try {
-            const msgId = ctx.message!.message_id + 1;
-            await ctx.api.editMessageText(ctx.chat!.id, msgId, status);
-          } catch {}
-        });
-        needsCleanup = true;
-      } catch (compressErr) {
-        logger.error({ err: compressErr, userId }, "Compression failed, trying to send original");
-        filePathToSend = result.filePath;
-      }
-    }
-
     try {
       await ctx.api.sendVideo(
         ctx.chat!.id,
-        new InputFile(filePathToSend),
+        new InputFile(result.filePath),
         { caption }
       );
     } catch (sendErr) {
       logger.error({ err: sendErr, userId }, "Failed to send video via Telegram");
-      await ctx.reply("Failed to send the video. Please try a lower quality.");
+      await ctx.reply("Failed to send the video. The file might be too large for Telegram (50MB limit).");
     } finally {
-      if (needsCleanup && fs.existsSync(filePathToSend)) {
-        fs.unlinkSync(filePathToSend);
-      }
       if (fs.existsSync(result.filePath)) {
         fs.unlinkSync(result.filePath);
       }
@@ -205,57 +179,6 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function compressVideo(filePath: string, onProgress?: (status: string) => void): Promise<string> {
-  const compressedPath = filePath.replace(".mp4", "_compressed.mp4");
-  const duration = await getVideoDuration(filePath);
-  const targetBitrate = Math.floor((TELEGRAM_MAX_SIZE * 8 * 0.95) / duration);
-
-  onProgress?.("Compressing video for Telegram...");
-
-  await execFileAsync("ffmpeg", [
-    "-i", filePath,
-    "-b:v", `${targetBitrate}`,
-    "-b:a", "128k",
-    "-movflags", "+faststart",
-    "-y",
-    compressedPath,
-  ], { timeout: 300000 });
-
-  return compressedPath;
-}
-
-async function compressVideoLow(filePath: string): Promise<string> {
-  const compressedPath = filePath.replace(".mp4", "_low.mp4");
-  const duration = await getVideoDuration(filePath);
-  const targetBitrate = Math.floor((30 * 1024 * 8 * 0.9) / duration); // Target 30MB
-
-  await execFileAsync("ffmpeg", [
-    "-i", filePath,
-    "-b:v", `${targetBitrate}`,
-    "-b:a", "96k",
-    "-vf", "scale=-2:480",
-    "-movflags", "+faststart",
-    "-y",
-    compressedPath,
-  ], { timeout: 300000 });
-
-  return compressedPath;
-}
-
-async function getVideoDuration(filePath: string): Promise<number> {
-  try {
-    const { stdout } = await execFileAsync("ffprobe", [
-      "-v", "error",
-      "-show_entries", "format=duration",
-      "-of", "default=noprint_wrappers=1:nokey=1",
-      filePath,
-    ]);
-    return parseFloat(stdout.trim()) || 60;
-  } catch {
-    return 60;
-  }
-}
-
 export async function queueDownload(ctx: Context, url: string): Promise<void> {
   const userId = ctx.from!.id;
 
@@ -279,34 +202,11 @@ export async function queueDownload(ctx: Context, url: string): Promise<void> {
       updateCacheHit(videoId);
       await ctx.reply("Video found in cache, sending...");
       const caption = `Cached video\n\nSize: ${formatSize(cached.file_size)}`;
-      let cachedPathToSend = cached.file_path;
-      let cachedNeedsCleanup = false;
-      if (cached.file_size > TELEGRAM_MAX_SIZE) {
-        await ctx.reply("Video is large, compressing for Telegram...");
-        try {
-          cachedPathToSend = await compressVideo(cached.file_path);
-          cachedNeedsCleanup = true;
-        } catch (compressErr) {
-          logger.error({ err: compressErr, userId }, "Compression failed for cached video");
-          // Try with lower bitrate as fallback
-          try {
-            cachedPathToSend = await compressVideoLow(cached.file_path);
-            cachedNeedsCleanup = true;
-          } catch {
-            await ctx.reply("Could not compress video. Try /quality 360 and download again.");
-            return;
-          }
-        }
-      }
       try {
-        await ctx.api.sendVideo(ctx.chat!.id, new InputFile(cachedPathToSend), { caption });
+        await ctx.api.sendVideo(ctx.chat!.id, new InputFile(cached.file_path), { caption });
       } catch (sendErr) {
         logger.error({ err: sendErr, userId }, "Failed to send cached video via Telegram");
-        await ctx.reply("Failed to send the video. Please try /quality 360 and download again.");
-      } finally {
-        if (cachedNeedsCleanup && fs.existsSync(cachedPathToSend)) {
-          fs.unlinkSync(cachedPathToSend);
-        }
+        await ctx.reply("Failed to send the cached video.");
       }
       return;
     }
@@ -316,25 +216,10 @@ export async function queueDownload(ctx: Context, url: string): Promise<void> {
       await ctx.reply("This video is already being downloaded. You'll receive it when ready.");
       const filePath = await lockResult;
       if (filePath && fs.existsSync(filePath)) {
-        let lockPathToSend = filePath;
-        let lockNeedsCleanup = false;
-        const lockStat = fs.statSync(filePath);
-        if (lockStat.size > TELEGRAM_MAX_SIZE) {
-          try {
-            lockPathToSend = await compressVideo(filePath);
-            lockNeedsCleanup = true;
-          } catch {
-            lockPathToSend = filePath;
-          }
-        }
         try {
-          await ctx.api.sendVideo(ctx.chat!.id, new InputFile(lockPathToSend));
+          await ctx.api.sendVideo(ctx.chat!.id, new InputFile(filePath));
         } catch {
           await ctx.reply("Failed to send the video.");
-        } finally {
-          if (lockNeedsCleanup && fs.existsSync(lockPathToSend)) {
-            fs.unlinkSync(lockPathToSend);
-          }
         }
       } else {
         await ctx.reply("The download failed. Please try again later.");
