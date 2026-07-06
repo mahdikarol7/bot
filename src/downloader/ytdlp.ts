@@ -26,21 +26,16 @@ export async function downloadVideo(
   onProgress?.(`Downloading video (${quality}p)...`);
 
   try {
-    const formatStr = `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best`;
     const args = [
       url,
       "-o", outputPath,
-      "--format", formatStr,
+      "--format", "best",
       "--no-playlist",
       "--no-overwrites",
       "--no-warnings",
       "--merge-output-format", "mp4",
       "--print-json",
     ];
-
-    if (config.maxFileSizeMB) {
-      args.push("--max-filesize", `${config.maxFileSizeMB * 1024 * 1024}`);
-    }
 
     const { stdout, stderr } = await execFileAsync("yt-dlp", args, {
       timeout: config.downloadTimeoutSec * 1000,
@@ -77,6 +72,7 @@ export async function downloadVideo(
         throw new Error("Download timed out. The video might be too long or the server is slow.");
       }
       const execErr = err as { stderr?: string; stdout?: string };
+      const errMsg = execErr.stderr || execErr.stdout || err.message;
       if (execErr.stderr) {
         if (execErr.stderr.includes("Video unavailable")) {
           throw new Error("This video is unavailable or has been removed.");
@@ -89,7 +85,7 @@ export async function downloadVideo(
           throw new Error(`Video exceeds the ${config.maxFileSizeMB}MB size limit.`);
         }
       }
-      throw new Error(`Download failed: ${err.message}`);
+      throw new Error(`Download failed: ${errMsg.substring(0, 200)}`);
     }
     throw new Error("Download failed due to an unknown error");
   }
