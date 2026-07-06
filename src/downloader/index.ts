@@ -1,10 +1,15 @@
 import fs from "fs";
 import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { Context, InputFile } from "grammy";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
 import { downloadVideo } from "./ytdlp.js";
 import { validateYouTubeUrl } from "./validator.js";
+
+const execFileAsync = promisify(execFile);
+const TELEGRAM_MAX_SIZE = 50 * 1024 * 1024; // 50MB Telegram limit
 import {
   createOrUpdateUser,
   incrementDownloadCount,
@@ -116,16 +121,37 @@ async function executeDownload(job: DownloadJob): Promise<void> {
 
     const caption = `${result.title}\n\nDuration: ${formatDuration(result.duration)} | Size: ${formatSize(result.fileSize)}`;
 
+    let filePathToSend = result.filePath;
+    let needsCleanup = false;
+
+    if (result.fileSize > TELEGRAM_MAX_SIZE) {
+      try {
+        filePathToSend = await compressVideo(result.filePath, async (status) => {
+          try {
+            const msgId = ctx.message!.message_id + 1;
+            await ctx.api.editMessageText(ctx.chat!.id, msgId, status);
+          } catch {}
+        });
+        needsCleanup = true;
+      } catch (compressErr) {
+        logger.error({ err: compressErr, userId }, "Compression failed, trying to send original");
+        filePathToSend = result.filePath;
+      }
+    }
+
     try {
       await ctx.api.sendVideo(
         ctx.chat!.id,
-        new InputFile(result.filePath),
+        new InputFile(filePathToSend),
         { caption }
       );
     } catch (sendErr) {
       logger.error({ err: sendErr, userId }, "Failed to send video via Telegram");
-      await ctx.reply("Failed to send the video. The file might be too large for Telegram (50MB limit).");
+      await ctx.reply("Failed to send the video. Please try a lower quality.");
     } finally {
+      if (needsCleanup && fs.existsSync(filePathToSend)) {
+        fs.unlinkSync(filePathToSend);
+      }
       if (fs.existsSync(result.filePath)) {
         fs.unlinkSync(result.filePath);
       }
@@ -177,6 +203,39 @@ function formatDuration(seconds: number): string {
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function compressVideo(filePath: string, onProgress?: (status: string) => void): Promise<string> {
+  const compressedPath = filePath.replace(".mp4", "_compressed.mp4");
+  const duration = await getVideoDuration(filePath);
+  const targetBitrate = Math.floor((TELEGRAM_MAX_SIZE * 8 * 0.95) / duration);
+
+  onProgress?.("Compressing video for Telegram...");
+
+  await execFileAsync("ffmpeg", [
+    "-i", filePath,
+    "-b:v", `${targetBitrate}`,
+    "-b:a", "128k",
+    "-movflags", "+faststart",
+    "-y",
+    compressedPath,
+  ], { timeout: 300000 });
+
+  return compressedPath;
+}
+
+async function getVideoDuration(filePath: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      filePath,
+    ]);
+    return parseFloat(stdout.trim()) || 60;
+  } catch {
+    return 60;
+  }
 }
 
 export async function queueDownload(ctx: Context, url: string): Promise<void> {
