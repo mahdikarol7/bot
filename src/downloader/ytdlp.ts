@@ -26,7 +26,7 @@ export async function downloadVideo(
   onProgress?.(`Downloading video (${quality}p)...`);
 
   try {
-    const formatStr = `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best`;
+    const formatStr = `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`;
     const args = [
       url,
       "-o", outputPath,
