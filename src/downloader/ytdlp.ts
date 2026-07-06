@@ -26,11 +26,12 @@ export async function downloadVideo(
   onProgress?.(`Downloading video (${quality}p)...`);
 
   try {
-    const formatStr = `best[height<=${quality}]/best`;
+    const formatSort = `height:${quality},ext:mp4`;
     const args = [
       url,
       "-o", outputPath,
-      "--format", formatStr,
+      "-S", formatSort,
+      "--format", "best",
       "--no-playlist",
       "--no-overwrites",
       "--no-warnings",
