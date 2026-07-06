@@ -23,6 +23,6 @@ RUN npm install
 
 COPY . .
 RUN npm run build
+RUN chmod +x start.sh
 
-# Start xray proxy in background, then start bot
-CMD /usr/local/bin/xray run -c /app/xray-config.json & sleep 2 && HTTPS_PROXY=socks5://127.0.0.1:1080 node dist/index.js
+CMD ["./start.sh"]
