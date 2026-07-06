@@ -33,13 +33,17 @@ export async function downloadVideo(
       "--no-playlist",
       "--no-overwrites",
       "--no-warnings",
+      "--no-check-certificates",
+      "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "--extractor-args", "youtube:player_client=tv_embedded,web_creator,web",
+      "--extractor-retries", "3",
       "--merge-output-format", "mp4",
       "--print-json",
     ];
 
     const { stdout, stderr } = await execFileAsync("yt-dlp", args, {
       timeout: config.downloadTimeoutSec * 1000,
-      maxBuffer: 10 * 1024 * 1024,
+      maxBuffer: 50 * 1024 * 1024,
     });
 
     if (stderr) {
@@ -83,6 +87,9 @@ export async function downloadVideo(
 
         if (execErr.stderr.includes("File is larger than max-filesize")) {
           throw new Error(`Video exceeds the ${config.maxFileSizeMB}MB size limit.`);
+        }
+        if (execErr.stderr.includes("Sign in to confirm")) {
+          throw new Error("YouTube is blocking downloads from this server. Please try again later.");
         }
       }
       throw new Error(`Download failed: ${errMsg.substring(0, 200)}`);
