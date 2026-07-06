@@ -1,0 +1,272 @@
+import fs from "fs";
+import path from "path";
+import { Context, InputFile } from "grammy";
+import { config } from "../config.js";
+import { logger } from "../utils/logger.js";
+import { downloadVideo } from "./ytdlp.js";
+import { validateYouTubeUrl } from "./validator.js";
+import {
+  createOrUpdateUser,
+  incrementDownloadCount,
+  getUser,
+} from "../database/users.js";
+import { runQuery, getOne } from "../database/index.js";
+import { extractVideoId } from "../utils/videoId.js";
+import {
+  getCachedVideo,
+  storeCachedVideo,
+  updateCacheHit,
+  getCacheDir,
+} from "../cache/index.js";
+import {
+  acquireDownloadLock,
+  releaseDownloadLock,
+  failDownloadLock,
+} from "../cache/lock.js";
+import { runCacheCleanup } from "../cache/cleanup.js";
+
+interface DownloadJob {
+  userId: number;
+  url: string;
+  ctx: Context;
+  quality: string;
+  videoId?: string;
+}
+
+interface UserRateLimit {
+  timestamps: number[];
+}
+
+const activeDownloads = new Map<number, boolean>();
+const rateLimits = new Map<number, UserRateLimit>();
+const userQualities = new Map<number, string>();
+let concurrentCount = 0;
+const downloadQueue: DownloadJob[] = [];
+
+function isRateLimited(userId: number): boolean {
+  const now = Date.now();
+  const userRate = rateLimits.get(userId);
+
+  if (!userRate) {
+    rateLimits.set(userId, { timestamps: [now] });
+    return false;
+  }
+
+  userRate.timestamps = userRate.timestamps.filter(
+    (t) => now - t < config.rateLimitWindowMs
+  );
+
+  if (userRate.timestamps.length >= config.rateLimitMax) {
+    return true;
+  }
+
+  userRate.timestamps.push(now);
+  return false;
+}
+
+function processQueue(): void {
+  while (
+    concurrentCount < config.maxConcurrentDownloads &&
+    downloadQueue.length > 0
+  ) {
+    const job = downloadQueue.shift()!;
+    concurrentCount++;
+    executeDownload(job).finally(() => {
+      concurrentCount--;
+      processQueue();
+    });
+  }
+}
+
+async function executeDownload(job: DownloadJob): Promise<void> {
+  const { userId, url, ctx, quality, videoId } = job;
+  const now = new Date().toISOString();
+
+  runQuery(
+    `INSERT INTO downloads (user_id, url, status, created_at) VALUES (?, ?, 'downloading', ?)`,
+    [userId, url, now]
+  );
+
+  const row = getOne<{ id: number }>(
+    "SELECT id FROM downloads WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+    [userId]
+  );
+  const downloadId = row?.id;
+
+  try {
+    const result = await downloadVideo(url, userId, quality, async (status) => {
+      try {
+        const msgId = ctx.message!.message_id + 1;
+        await ctx.api.editMessageText(ctx.chat!.id, msgId, status);
+      } catch {
+        // Message might not exist yet
+      }
+    });
+
+    runQuery(
+      `UPDATE downloads SET status = 'completed', file_path = ?, file_size = ?, duration = ?, completed_at = ? WHERE id = ?`,
+      [result.filePath, result.fileSize, result.duration, new Date().toISOString(), downloadId ?? 0]
+    );
+
+    incrementDownloadCount(userId);
+
+    if (videoId) {
+      storeCachedVideo(videoId, result.filePath, result.fileSize);
+    }
+
+    const caption = `${result.title}\n\nDuration: ${formatDuration(result.duration)} | Size: ${formatSize(result.fileSize)}`;
+
+    try {
+      await ctx.api.sendVideo(
+        ctx.chat!.id,
+        new InputFile(result.filePath),
+        { caption }
+      );
+    } catch (sendErr) {
+      logger.error({ err: sendErr, userId }, "Failed to send video via Telegram");
+      await ctx.reply("Failed to send the video. The file might be too large for Telegram (50MB limit).");
+    } finally {
+      if (fs.existsSync(result.filePath)) {
+        fs.unlinkSync(result.filePath);
+      }
+    }
+
+    try {
+      await ctx.api.deleteMessage(ctx.chat!.id, ctx.message!.message_id + 1);
+    } catch {
+      // Ignore if we can't delete the status message
+    }
+
+    if (videoId) {
+      const cachedPath = path.join(getCacheDir(), `${videoId}.mp4`);
+      releaseDownloadLock(videoId, fs.existsSync(cachedPath) ? cachedPath : undefined);
+      runCacheCleanup();
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : "Unknown error";
+
+    if (videoId) {
+      failDownloadLock(videoId);
+    }
+
+    runQuery(
+      `UPDATE downloads SET status = 'failed', error_message = ? WHERE id = ?`,
+      [errorMsg, downloadId ?? 0]
+    );
+
+    try {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        ctx.message!.message_id + 1,
+        `Error: ${errorMsg}`
+      );
+    } catch {
+      await ctx.reply(`Error: ${errorMsg}`);
+    }
+  } finally {
+    activeDownloads.delete(userId);
+  }
+}
+
+function formatDuration(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export async function queueDownload(ctx: Context, url: string): Promise<void> {
+  const userId = ctx.from!.id;
+
+  const validation = validateYouTubeUrl(url);
+  if (!validation.valid) {
+    await ctx.reply(validation.error!);
+    return;
+  }
+
+  const user = getUser(userId);
+  if (user?.is_banned) {
+    await ctx.reply("Your account has been banned. Contact an admin for assistance.");
+    return;
+  }
+
+  const videoId = await extractVideoId(validation.url!);
+
+  if (videoId) {
+    const cached = getCachedVideo(videoId);
+    if (cached) {
+      updateCacheHit(videoId);
+      await ctx.reply("Video found in cache, sending...");
+      const caption = `Cached video\n\nSize: ${formatSize(cached.file_size)}`;
+      try {
+        await ctx.api.sendVideo(ctx.chat!.id, new InputFile(cached.file_path), { caption });
+      } catch (sendErr) {
+        logger.error({ err: sendErr, userId }, "Failed to send cached video via Telegram");
+        await ctx.reply("Failed to send the cached video.");
+      }
+      return;
+    }
+
+    const lockResult = acquireDownloadLock(videoId, userId, ctx);
+    if (lockResult !== null) {
+      await ctx.reply("This video is already being downloaded. You'll receive it when ready.");
+      const filePath = await lockResult;
+      if (filePath && fs.existsSync(filePath)) {
+        try {
+          await ctx.api.sendVideo(ctx.chat!.id, new InputFile(filePath));
+        } catch {
+          await ctx.reply("Failed to send the video.");
+        }
+      } else {
+        await ctx.reply("The download failed. Please try again later.");
+      }
+      return;
+    }
+  }
+
+  if (activeDownloads.has(userId)) {
+    if (videoId) failDownloadLock(videoId);
+    await ctx.reply("You already have a download in progress. Please wait for it to finish.");
+    return;
+  }
+
+  if (isRateLimited(userId)) {
+    if (videoId) failDownloadLock(videoId);
+    const remaining = Math.ceil(
+      (config.rateLimitWindowMs -
+        (Date.now() - (rateLimits.get(userId)?.timestamps[0] ?? 0))) /
+        60000
+    );
+    await ctx.reply(
+      `Rate limit exceeded. You can download ${config.rateLimitMax} videos per hour. Try again in ${remaining} minutes.`
+    );
+    return;
+  }
+
+  createOrUpdateUser(userId, ctx.from!.username ?? null, ctx.from!.first_name ?? null);
+  activeDownloads.set(userId, true);
+
+  await ctx.reply("Queued for download...");
+
+  downloadQueue.push({ userId, url: validation.url!, ctx, quality: userQualities.get(userId) ?? config.defaultQuality, videoId: videoId ?? undefined });
+  processQueue();
+}
+
+export function setUserQuality(userId: number, quality: string): void {
+  userQualities.set(userId, quality);
+}
+
+export function getUserQuality(userId: number): string {
+  return userQualities.get(userId) ?? config.defaultQuality;
+}
+
+export function getQueueStatus(): { active: number; queued: number } {
+  return {
+    active: concurrentCount,
+    queued: downloadQueue.length,
+  };
+}
