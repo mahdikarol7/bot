@@ -34,6 +34,8 @@ export async function downloadVideo(
       "--no-playlist",
       "--no-overwrites",
       "--no-warnings",
+      "--no-check-certificates",
+      "--extractor-args", "youtube:player_client=ios,web",
       "--merge-output-format", "mp4",
       "--print-json",
     ];
@@ -84,9 +86,7 @@ export async function downloadVideo(
         if (execErr.stderr.includes("Private video")) {
           throw new Error("This is a private video and cannot be downloaded.");
         }
-        if (execErr.stderr.includes("Sign in to confirm")) {
-          throw new Error("This video requires sign-in and cannot be downloaded.");
-        }
+
         if (execErr.stderr.includes("File is larger than max-filesize")) {
           throw new Error(`Video exceeds the ${config.maxFileSizeMB}MB size limit.`);
         }
@@ -100,7 +100,7 @@ export async function downloadVideo(
 export async function getVideoInfo(url: string): Promise<{ title: string; duration: number }> {
   const { stdout } = await execFileAsync(
     "yt-dlp",
-    [url, "--print-json", "--skip-download", "--no-playlist"],
+    [url, "--print-json", "--skip-download", "--no-playlist", "--no-check-certificates", "--extractor-args", "youtube:player_client=ios,web"],
     { timeout: 30000 }
   );
   const info = JSON.parse(stdout);
