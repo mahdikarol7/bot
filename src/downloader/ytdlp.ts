@@ -16,6 +16,19 @@ export interface DownloadResult {
   fileSize: number;
 }
 
+const FREE_PROXIES = [
+  "socks5://193.233.199.21:1080",
+  "socks5://178.208.88.28:1080",
+  "socks5://185.132.1.221:4145",
+  "socks5://94.156.102.122:1080",
+  "socks5://185.220.101.43:1080",
+  "socks5://176.126.252.12:1080",
+  "socks5://213.188.203.54:1080",
+  "socks5://5.181.178.46:8080",
+  "socks5://45.135.139.203:6506",
+  "socks5://185.226.207.46:5595",
+];
+
 export async function downloadVideo(
   url: string,
   userId: number,
@@ -74,27 +87,58 @@ export async function downloadVideo(
       fileSize: stat.size,
     };
   } catch (ytdlpErr) {
-    logger.warn({ err: ytdlpErr }, "yt-dlp failed, trying cobalt fallback");
-    onProgress?.("yt-dlp blocked, trying alternative...");
+    logger.warn({ err: ytdlpErr }, "yt-dlp failed, trying with free proxies");
+    onProgress?.("Direct download blocked, trying proxies...");
+
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY;
+
+    for (const proxy of FREE_PROXIES) {
+      try {
+        logger.info({ proxy }, "Trying proxy");
+        const proxyArgs = [
+          url, "-o", outputPath, "--format", "best",
+          "--no-playlist", "--no-overwrites", "--no-warnings", "--no-check-certificates",
+          "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "--proxy", proxy,
+          "--merge-output-format", "mp4", "--print-json",
+          "--socket-timeout", "15",
+        ];
+
+        const { stdout } = await execFileAsync("yt-dlp", proxyArgs, {
+          timeout: 60000,
+          maxBuffer: 50 * 1024 * 1024,
+        });
+
+        if (!fs.existsSync(outputPath)) throw new Error("File not found");
+        const stat = fs.statSync(outputPath);
+        const info = JSON.parse(stdout);
+        onProgress?.("Download complete, sending video...");
+        return { filePath: outputPath, title: info.title || "YouTube Video", duration: info.duration || 0, fileSize: stat.size };
+      } catch {
+        logger.warn({ proxy }, "Proxy failed");
+      }
+    }
+
+    logger.warn("All proxies failed, trying cobalt");
+    onProgress?.("Proxies failed, trying cobalt...");
 
     try {
       await downloadViaCobalt(url, outputPath);
-      if (!fs.existsSync(outputPath)) throw new Error("Cobalt download failed");
+      if (!fs.existsSync(outputPath)) throw new Error("File not found");
       const stat = fs.statSync(outputPath);
       onProgress?.("Download complete, sending video...");
       return { filePath: outputPath, title: "YouTube Video", duration: 0, fileSize: stat.size };
     } catch (cobaltErr) {
       logger.warn({ err: cobaltErr }, "Cobalt failed, trying Invidious");
-
       try {
         await downloadViaInvidious(url, outputPath);
-        if (!fs.existsSync(outputPath)) throw new Error("Invidious download failed");
+        if (!fs.existsSync(outputPath)) throw new Error("File not found");
         const stat = fs.statSync(outputPath);
         onProgress?.("Download complete, sending video...");
         return { filePath: outputPath, title: "YouTube Video", duration: 0, fileSize: stat.size };
-      } catch (invErr) {
+      } catch {
         if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        throw new Error("All download methods failed. YouTube may be blocking this video. Try again later.");
+        throw new Error("All download methods failed. Try again later or try a different video.");
       }
     }
   }
