@@ -26,7 +26,7 @@ export async function downloadVideo(
   onProgress?.(`Downloading video (${quality}p)...`);
 
   try {
-    const formatStr = `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`;
+    const formatStr = `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best`;
     const args = [
       url,
       "-o", outputPath,
@@ -37,6 +37,10 @@ export async function downloadVideo(
       "--merge-output-format", "mp4",
       "--print-json",
     ];
+
+    if (config.maxFileSizeMB) {
+      args.push("--max-filesize", `${config.maxFileSizeMB * 1024 * 1024}`);
+    }
 
     const { stdout, stderr } = await execFileAsync("yt-dlp", args, {
       timeout: config.downloadTimeoutSec * 1000,

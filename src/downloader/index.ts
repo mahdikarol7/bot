@@ -137,7 +137,7 @@ async function executeDownload(job: DownloadJob): Promise<void> {
     try {
       await ctx.api.sendVideo(ctx.chat!.id, new InputFile(filePathToSend), { caption });
     } catch (sendErr) {
-      logger.error({ err: sendErr, userId }, "Failed to send video via Telegram");
+      logger.error({ err: sendErr, userId }, "Failed to send video");
       await ctx.reply("Failed to send the video. Try /quality 360.");
     } finally {
       if (needsCleanup && fs.existsSync(filePathToSend)) fs.unlinkSync(filePathToSend);
@@ -146,9 +146,7 @@ async function executeDownload(job: DownloadJob): Promise<void> {
 
     try {
       await ctx.api.deleteMessage(ctx.chat!.id, ctx.message!.message_id + 1);
-    } catch {
-      // Ignore if we can't delete the status message
-    }
+    } catch {}
 
     if (videoId) {
       const cachedPath = path.join(getCacheDir(), `${videoId}.mp4`);
@@ -168,11 +166,7 @@ async function executeDownload(job: DownloadJob): Promise<void> {
     );
 
     try {
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        ctx.message!.message_id + 1,
-        `Error: ${errorMsg}`
-      );
+      await ctx.api.editMessageText(ctx.chat!.id, ctx.message!.message_id + 1, `Error: ${errorMsg}`);
     } catch {
       await ctx.reply(`Error: ${errorMsg}`);
     }
@@ -200,12 +194,10 @@ async function compressVideo(filePath: string): Promise<string> {
   ]);
   const duration = parseFloat(stdout.trim()) || 60;
   const targetBitrate = Math.floor((TELEGRAM_MAX_SIZE * 8 * 0.9) / duration);
-
   await execFileAsync("ffmpeg", [
     "-i", filePath, "-b:v", `${targetBitrate}`, "-b:a", "128k",
     "-movflags", "+faststart", "-y", compressedPath,
   ], { timeout: 300000 });
-
   return compressedPath;
 }
 
@@ -288,13 +280,9 @@ export async function queueDownload(ctx: Context, url: string): Promise<void> {
   if (isRateLimited(userId)) {
     if (videoId) failDownloadLock(videoId);
     const remaining = Math.ceil(
-      (config.rateLimitWindowMs -
-        (Date.now() - (rateLimits.get(userId)?.timestamps[0] ?? 0))) /
-        60000
+      (config.rateLimitWindowMs - (Date.now() - (rateLimits.get(userId)?.timestamps[0] ?? 0))) / 60000
     );
-    await ctx.reply(
-      `Rate limit exceeded. You can download ${config.rateLimitMax} videos per hour. Try again in ${remaining} minutes.`
-    );
+    await ctx.reply(`Rate limit exceeded. You can download ${config.rateLimitMax} videos per hour. Try again in ${remaining} minutes.`);
     return;
   }
 
