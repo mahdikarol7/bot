@@ -74,35 +74,28 @@ export async function downloadVideo(
       fileSize: stat.size,
     };
   } catch (ytdlpErr) {
-    // yt-dlp failed - try cobalt fallback
     logger.warn({ err: ytdlpErr }, "yt-dlp failed, trying cobalt fallback");
-    onProgress?.("yt-dlp failed, trying alternative download...");
+    onProgress?.("yt-dlp blocked, trying alternative...");
 
     try {
       await downloadViaCobalt(url, outputPath);
-
-      if (!fs.existsSync(outputPath)) {
-        throw new Error("Cobalt download completed but output file not found");
-      }
-
+      if (!fs.existsSync(outputPath)) throw new Error("Cobalt download failed");
       const stat = fs.statSync(outputPath);
       onProgress?.("Download complete, sending video...");
-
-      return {
-        filePath: outputPath,
-        title: "YouTube Video",
-        duration: 0,
-        fileSize: stat.size,
-      };
+      return { filePath: outputPath, title: "YouTube Video", duration: 0, fileSize: stat.size };
     } catch (cobaltErr) {
-      // Both failed
-      if (fs.existsSync(outputPath)) {
-        fs.unlinkSync(outputPath);
-      }
+      logger.warn({ err: cobaltErr }, "Cobalt failed, trying Invidious");
 
-      const ytdlpMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "yt-dlp error";
-      const cobaltMsg = cobaltErr instanceof Error ? cobaltErr.message : "cobalt error";
-      throw new Error(`Both download methods failed.\nyt-dlp: ${ytdlpMsg.substring(0, 150)}\nCobalt: ${cobaltMsg.substring(0, 150)}`);
+      try {
+        await downloadViaInvidious(url, outputPath);
+        if (!fs.existsSync(outputPath)) throw new Error("Invidious download failed");
+        const stat = fs.statSync(outputPath);
+        onProgress?.("Download complete, sending video...");
+        return { filePath: outputPath, title: "YouTube Video", duration: 0, fileSize: stat.size };
+      } catch (invErr) {
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+        throw new Error("All download methods failed. YouTube may be blocking this video. Try again later.");
+      }
     }
   }
 }
@@ -142,6 +135,7 @@ async function downloadViaCobalt(url: string, outputPath: string): Promise<void>
   const instances = [
     "https://api.cobalt.tools/",
     "https://cobalt-api.kwiatekmiki.com/",
+    "https://cobalt-api.hyper.lol/",
   ];
 
   for (const instance of instances) {
@@ -180,10 +174,50 @@ async function downloadViaCobalt(url: string, outputPath: string): Promise<void>
         req.end();
       });
 
-      return; // Success
+      return;
     } catch (err) {
       logger.warn({ instance, err }, "Cobalt instance failed, trying next");
     }
   }
   throw new Error("All cobalt instances failed");
+}
+
+async function downloadViaInvidious(url: string, outputPath: string): Promise<void> {
+  const videoIdMatch = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  if (!videoIdMatch) throw new Error("Could not extract video ID");
+  const videoId = videoIdMatch[1];
+
+  const instances = [
+    "https://vid.puffyan.us",
+    "https://invidious.snopyta.org",
+    "https://yewtu.be",
+    "https://inv.nadeko.net",
+    "https://invidious.privacyredirect.com",
+    "https://iv.ggtyler.dev",
+  ];
+
+  for (const instance of instances) {
+    try {
+      const apiUrl = `${instance}/api/v1/videos/${videoId}`;
+      const data = await new Promise<any>((resolve, reject) => {
+        https.get(apiUrl, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 15000 }, (res) => {
+          let body = "";
+          res.on("data", (c) => { body += c; });
+          res.on("end", () => {
+            try { resolve(JSON.parse(body)); } catch { reject(new Error("Invalid JSON")); }
+          });
+        }).on("error", reject);
+      });
+
+      const format = data.formatStreams?.find((f: any) => f.type?.includes("video/mp4")) ||
+                     data.formatStreams?.[data.formatStreams.length - 1];
+      if (!format?.url) continue;
+
+      await downloadFile(format.url, outputPath);
+      return;
+    } catch (err) {
+      logger.warn({ instance, err }, "Invidious instance failed");
+    }
+  }
+  throw new Error("All Invidious instances failed");
 }
