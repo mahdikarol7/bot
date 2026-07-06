@@ -35,7 +35,8 @@ export async function downloadVideo(
       "--no-overwrites",
       "--no-warnings",
       "--no-check-certificates",
-      "--extractor-args", "youtube:player_client=ios,web",
+      "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "--extractor-args", "youtube:player_client=tv_embedded,web",
       "--merge-output-format", "mp4",
       "--print-json",
     ];
@@ -100,7 +101,7 @@ export async function downloadVideo(
 export async function getVideoInfo(url: string): Promise<{ title: string; duration: number }> {
   const { stdout } = await execFileAsync(
     "yt-dlp",
-    [url, "--print-json", "--skip-download", "--no-playlist", "--no-check-certificates", "--extractor-args", "youtube:player_client=ios,web"],
+    [url, "--print-json", "--skip-download", "--no-playlist", "--no-check-certificates", "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", "--extractor-args", "youtube:player_client=tv_embedded,web"],
     { timeout: 30000 }
   );
   const info = JSON.parse(stdout);
