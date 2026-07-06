@@ -1,8 +1,6 @@
 import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
-import https from "https";
-import http from "http";
 import { promisify } from "util";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
@@ -16,19 +14,6 @@ export interface DownloadResult {
   fileSize: number;
 }
 
-const FREE_PROXIES = [
-  "socks5://193.233.199.21:1080",
-  "socks5://178.208.88.28:1080",
-  "socks5://185.132.1.221:4145",
-  "socks5://94.156.102.122:1080",
-  "socks5://185.220.101.43:1080",
-  "socks5://176.126.252.12:1080",
-  "socks5://213.188.203.54:1080",
-  "socks5://5.181.178.46:8080",
-  "socks5://45.135.139.203:6506",
-  "socks5://185.226.207.46:5595",
-];
-
 export async function downloadVideo(
   url: string,
   userId: number,
@@ -41,29 +26,25 @@ export async function downloadVideo(
   onProgress?.(`Downloading video (${quality}p)...`);
 
   try {
+    const formatStr = `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best`;
     const args = [
       url,
       "-o", outputPath,
-      "--format", "best",
+      "--format", formatStr,
       "--no-playlist",
       "--no-overwrites",
       "--no-warnings",
-      "--no-check-certificates",
-      "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "--extractor-args", "youtube:player_client=tv_embedded,web_creator,web",
-      "--extractor-retries", "3",
       "--merge-output-format", "mp4",
       "--print-json",
     ];
 
-    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY;
-    if (proxyUrl) {
-      args.push("--proxy", proxyUrl);
+    if (config.maxFileSizeMB) {
+      args.push("--max-filesize", `${config.maxFileSizeMB * 1024 * 1024}`);
     }
 
     const { stdout, stderr } = await execFileAsync("yt-dlp", args, {
       timeout: config.downloadTimeoutSec * 1000,
-      maxBuffer: 50 * 1024 * 1024,
+      maxBuffer: 10 * 1024 * 1024,
     });
 
     if (stderr) {
@@ -86,182 +67,39 @@ export async function downloadVideo(
       duration: info.duration || 0,
       fileSize: stat.size,
     };
-  } catch (ytdlpErr) {
-    logger.warn({ err: ytdlpErr }, "yt-dlp failed, trying with free proxies");
-    onProgress?.("Direct download blocked, trying proxies...");
-
-    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY;
-
-    for (const proxy of FREE_PROXIES) {
-      try {
-        logger.info({ proxy }, "Trying proxy");
-        const proxyArgs = [
-          url, "-o", outputPath, "--format", "best",
-          "--no-playlist", "--no-overwrites", "--no-warnings", "--no-check-certificates",
-          "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "--proxy", proxy,
-          "--merge-output-format", "mp4", "--print-json",
-          "--socket-timeout", "15",
-        ];
-
-        const { stdout } = await execFileAsync("yt-dlp", proxyArgs, {
-          timeout: 60000,
-          maxBuffer: 50 * 1024 * 1024,
-        });
-
-        if (!fs.existsSync(outputPath)) throw new Error("File not found");
-        const stat = fs.statSync(outputPath);
-        const info = JSON.parse(stdout);
-        onProgress?.("Download complete, sending video...");
-        return { filePath: outputPath, title: info.title || "YouTube Video", duration: info.duration || 0, fileSize: stat.size };
-      } catch {
-        logger.warn({ proxy }, "Proxy failed");
-      }
+  } catch (err) {
+    if (fs.existsSync(outputPath)) {
+      fs.unlinkSync(outputPath);
     }
 
-    logger.warn("All proxies failed, trying cobalt");
-    onProgress?.("Proxies failed, trying cobalt...");
-
-    try {
-      await downloadViaCobalt(url, outputPath);
-      if (!fs.existsSync(outputPath)) throw new Error("File not found");
-      const stat = fs.statSync(outputPath);
-      onProgress?.("Download complete, sending video...");
-      return { filePath: outputPath, title: "YouTube Video", duration: 0, fileSize: stat.size };
-    } catch (cobaltErr) {
-      logger.warn({ err: cobaltErr }, "Cobalt failed, trying Invidious");
-      try {
-        await downloadViaInvidious(url, outputPath);
-        if (!fs.existsSync(outputPath)) throw new Error("File not found");
-        const stat = fs.statSync(outputPath);
-        onProgress?.("Download complete, sending video...");
-        return { filePath: outputPath, title: "YouTube Video", duration: 0, fileSize: stat.size };
-      } catch {
-        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        throw new Error("All download methods failed. Try again later or try a different video.");
+    if (err instanceof Error) {
+      if ((err as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+        throw new Error("Download timed out. The video might be too long or the server is slow.");
       }
+      const execErr = err as { stderr?: string; stdout?: string };
+      if (execErr.stderr) {
+        if (execErr.stderr.includes("Video unavailable")) {
+          throw new Error("This video is unavailable or has been removed.");
+        }
+        if (execErr.stderr.includes("Private video")) {
+          throw new Error("This is a private video and cannot be downloaded.");
+        }
+        if (execErr.stderr.includes("File is larger than max-filesize")) {
+          throw new Error(`Video exceeds the ${config.maxFileSizeMB}MB size limit.`);
+        }
+      }
+      throw new Error(`Download failed: ${err.message}`);
     }
+    throw new Error("Download failed due to an unknown error");
   }
 }
 
 export async function getVideoInfo(url: string): Promise<{ title: string; duration: number }> {
-  const args = [url, "--print-json", "--skip-download", "--no-playlist"];
-  const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY;
-  if (proxyUrl) {
-    args.push("--proxy", proxyUrl);
-  }
-  const { stdout } = await execFileAsync("yt-dlp", args, { timeout: 30000 });
+  const { stdout } = await execFileAsync(
+    "yt-dlp",
+    [url, "--print-json", "--skip-download", "--no-playlist"],
+    { timeout: 30000 }
+  );
   const info = JSON.parse(stdout);
   return { title: info.title || "Untitled", duration: info.duration || 0 };
-}
-
-function downloadFile(url: string, destPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith("https") ? https : http;
-    const file = fs.createWriteStream(destPath);
-    client.get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        downloadFile(res.headers.location!, destPath).then(resolve).catch(reject);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode}`));
-        return;
-      }
-      res.pipe(file);
-      file.on("finish", () => { file.close(); resolve(); });
-      file.on("error", reject);
-    }).on("error", reject);
-  });
-}
-
-async function downloadViaCobalt(url: string, outputPath: string): Promise<void> {
-  const instances = [
-    "https://api.cobalt.tools/",
-    "https://cobalt-api.kwiatekmiki.com/",
-    "https://cobalt-api.hyper.lol/",
-  ];
-
-  for (const instance of instances) {
-    try {
-      const body = JSON.stringify({ url, downloadMode: "auto", filenameStyle: "basic" });
-
-      await new Promise<void>((resolve, reject) => {
-        const req = https.request(instance, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-          },
-          timeout: 30000,
-        }, (res) => {
-          let data = "";
-          res.on("data", (chunk) => { data += chunk; });
-          res.on("end", async () => {
-            try {
-              const json = JSON.parse(data);
-              logger.info({ instance, status: json.status }, "Cobalt response");
-              if (json.status === "tunnel" || json.status === "redirect") {
-                await downloadFile(json.url, outputPath);
-                resolve();
-              } else {
-                reject(new Error(json.error?.message || `Status: ${json.status}`));
-              }
-            } catch (e) {
-              reject(e);
-            }
-          });
-        });
-        req.on("error", reject);
-        req.on("timeout", () => { req.destroy(); reject(new Error("Timeout")); });
-        req.write(body);
-        req.end();
-      });
-
-      return;
-    } catch (err) {
-      logger.warn({ instance, err }, "Cobalt instance failed, trying next");
-    }
-  }
-  throw new Error("All cobalt instances failed");
-}
-
-async function downloadViaInvidious(url: string, outputPath: string): Promise<void> {
-  const videoIdMatch = url.match(/(?:v=|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-  if (!videoIdMatch) throw new Error("Could not extract video ID");
-  const videoId = videoIdMatch[1];
-
-  const instances = [
-    "https://vid.puffyan.us",
-    "https://invidious.snopyta.org",
-    "https://yewtu.be",
-    "https://inv.nadeko.net",
-    "https://invidious.privacyredirect.com",
-    "https://iv.ggtyler.dev",
-  ];
-
-  for (const instance of instances) {
-    try {
-      const apiUrl = `${instance}/api/v1/videos/${videoId}`;
-      const data = await new Promise<any>((resolve, reject) => {
-        https.get(apiUrl, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 15000 }, (res) => {
-          let body = "";
-          res.on("data", (c) => { body += c; });
-          res.on("end", () => {
-            try { resolve(JSON.parse(body)); } catch { reject(new Error("Invalid JSON")); }
-          });
-        }).on("error", reject);
-      });
-
-      const format = data.formatStreams?.find((f: any) => f.type?.includes("video/mp4")) ||
-                     data.formatStreams?.[data.formatStreams.length - 1];
-      if (!format?.url) continue;
-
-      await downloadFile(format.url, outputPath);
-      return;
-    } catch (err) {
-      logger.warn({ instance, err }, "Invidious instance failed");
-    }
-  }
-  throw new Error("All Invidious instances failed");
 }
