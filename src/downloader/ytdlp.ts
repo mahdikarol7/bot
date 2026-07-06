@@ -95,11 +95,9 @@ export async function downloadVideo(
         fs.unlinkSync(outputPath);
       }
 
-      const errMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "Unknown error";
-      if (errMsg.includes("Sign in") || errMsg.includes("bot")) {
-        throw new Error("YouTube is blocking this video. Please try a different video or try again later.");
-      }
-      throw new Error(`Download failed: ${errMsg.substring(0, 200)}`);
+      const ytdlpMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "yt-dlp error";
+      const cobaltMsg = cobaltErr instanceof Error ? cobaltErr.message : "cobalt error";
+      throw new Error(`Both download methods failed.\nyt-dlp: ${ytdlpMsg.substring(0, 150)}\nCobalt: ${cobaltMsg.substring(0, 150)}`);
     }
   }
 }
@@ -135,34 +133,51 @@ function downloadFile(url: string, destPath: string): Promise<void> {
 }
 
 async function downloadViaCobalt(url: string, outputPath: string): Promise<void> {
-  const body = JSON.stringify({ url, downloadMode: "auto", filenameStyle: "basic" });
+  const instances = [
+    "https://api.cobalt.tools/",
+    "https://cobalt-api.kwiatekmiki.com/",
+  ];
 
-  return new Promise((resolve, reject) => {
-    const req = https.request("https://api.cobalt.tools/", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-      },
-    }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => { data += chunk; });
-      res.on("end", async () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.status === "tunnel" || json.status === "redirect") {
-            await downloadFile(json.url, outputPath);
-            resolve();
-          } else {
-            reject(new Error(json.error?.message || "Cobalt download failed"));
-          }
-        } catch (e) {
-          reject(e);
-        }
+  for (const instance of instances) {
+    try {
+      const body = JSON.stringify({ url, downloadMode: "auto", filenameStyle: "basic" });
+
+      await new Promise<void>((resolve, reject) => {
+        const req = https.request(instance, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+          timeout: 30000,
+        }, (res) => {
+          let data = "";
+          res.on("data", (chunk) => { data += chunk; });
+          res.on("end", async () => {
+            try {
+              const json = JSON.parse(data);
+              logger.info({ instance, status: json.status }, "Cobalt response");
+              if (json.status === "tunnel" || json.status === "redirect") {
+                await downloadFile(json.url, outputPath);
+                resolve();
+              } else {
+                reject(new Error(json.error?.message || `Status: ${json.status}`));
+              }
+            } catch (e) {
+              reject(e);
+            }
+          });
+        });
+        req.on("error", reject);
+        req.on("timeout", () => { req.destroy(); reject(new Error("Timeout")); });
+        req.write(body);
+        req.end();
       });
-    });
-    req.on("error", reject);
-    req.write(body);
-    req.end();
-  });
+
+      return; // Success
+    } catch (err) {
+      logger.warn({ instance, err }, "Cobalt instance failed, trying next");
+    }
+  }
+  throw new Error("All cobalt instances failed");
 }
