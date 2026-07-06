@@ -1,6 +1,8 @@
 import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
+import https from "https";
+import http from "http";
 import { promisify } from "util";
 import { config } from "../config.js";
 import { logger } from "../utils/logger.js";
@@ -66,35 +68,39 @@ export async function downloadVideo(
       duration: info.duration || 0,
       fileSize: stat.size,
     };
-  } catch (err) {
-    if (fs.existsSync(outputPath)) {
-      fs.unlinkSync(outputPath);
-    }
+  } catch (ytdlpErr) {
+    // yt-dlp failed - try cobalt fallback
+    logger.warn({ err: ytdlpErr }, "yt-dlp failed, trying cobalt fallback");
+    onProgress?.("yt-dlp failed, trying alternative download...");
 
-    if (err instanceof Error) {
-      if ((err as NodeJS.ErrnoException).code === "ETIMEDOUT") {
-        throw new Error("Download timed out. The video might be too long or the server is slow.");
+    try {
+      await downloadViaCobalt(url, outputPath);
+
+      if (!fs.existsSync(outputPath)) {
+        throw new Error("Cobalt download completed but output file not found");
       }
-      const execErr = err as { stderr?: string; stdout?: string };
-      const errMsg = execErr.stderr || execErr.stdout || err.message;
-      if (execErr.stderr) {
-        if (execErr.stderr.includes("Video unavailable")) {
-          throw new Error("This video is unavailable or has been removed.");
-        }
-        if (execErr.stderr.includes("Private video")) {
-          throw new Error("This is a private video and cannot be downloaded.");
-        }
 
-        if (execErr.stderr.includes("File is larger than max-filesize")) {
-          throw new Error(`Video exceeds the ${config.maxFileSizeMB}MB size limit.`);
-        }
-        if (execErr.stderr.includes("Sign in to confirm")) {
-          throw new Error("YouTube is blocking downloads from this server. Please try again later.");
-        }
+      const stat = fs.statSync(outputPath);
+      onProgress?.("Download complete, sending video...");
+
+      return {
+        filePath: outputPath,
+        title: "YouTube Video",
+        duration: 0,
+        fileSize: stat.size,
+      };
+    } catch (cobaltErr) {
+      // Both failed
+      if (fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath);
+      }
+
+      const errMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "Unknown error";
+      if (errMsg.includes("Sign in") || errMsg.includes("bot")) {
+        throw new Error("YouTube is blocking this video. Please try a different video or try again later.");
       }
       throw new Error(`Download failed: ${errMsg.substring(0, 200)}`);
     }
-    throw new Error("Download failed due to an unknown error");
   }
 }
 
@@ -106,4 +112,57 @@ export async function getVideoInfo(url: string): Promise<{ title: string; durati
   );
   const info = JSON.parse(stdout);
   return { title: info.title || "Untitled", duration: info.duration || 0 };
+}
+
+function downloadFile(url: string, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith("https") ? https : http;
+    const file = fs.createWriteStream(destPath);
+    client.get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        downloadFile(res.headers.location!, destPath).then(resolve).catch(reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      res.pipe(file);
+      file.on("finish", () => { file.close(); resolve(); });
+      file.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+async function downloadViaCobalt(url: string, outputPath: string): Promise<void> {
+  const body = JSON.stringify({ url, downloadMode: "auto", filenameStyle: "basic" });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request("https://api.cobalt.tools/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", async () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.status === "tunnel" || json.status === "redirect") {
+            await downloadFile(json.url, outputPath);
+            resolve();
+          } else {
+            reject(new Error(json.error?.message || "Cobalt download failed"));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }
