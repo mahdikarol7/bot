@@ -43,6 +43,11 @@ export async function downloadVideo(
       "--print-json",
     ];
 
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY;
+    if (proxyUrl) {
+      args.push("--proxy", proxyUrl);
+    }
+
     const { stdout, stderr } = await execFileAsync("yt-dlp", args, {
       timeout: config.downloadTimeoutSec * 1000,
       maxBuffer: 50 * 1024 * 1024,
@@ -103,11 +108,12 @@ export async function downloadVideo(
 }
 
 export async function getVideoInfo(url: string): Promise<{ title: string; duration: number }> {
-  const { stdout } = await execFileAsync(
-    "yt-dlp",
-    [url, "--print-json", "--skip-download", "--no-playlist"],
-    { timeout: 30000 }
-  );
+  const args = [url, "--print-json", "--skip-download", "--no-playlist"];
+  const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY;
+  if (proxyUrl) {
+    args.push("--proxy", proxyUrl);
+  }
+  const { stdout } = await execFileAsync("yt-dlp", args, { timeout: 30000 });
   const info = JSON.parse(stdout);
   return { title: info.title || "Untitled", duration: info.duration || 0 };
 }
