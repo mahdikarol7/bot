@@ -277,15 +277,6 @@ export async function queueDownload(ctx: Context, url: string): Promise<void> {
     return;
   }
 
-  if (isRateLimited(userId)) {
-    if (videoId) failDownloadLock(videoId);
-    const remaining = Math.ceil(
-      (config.rateLimitWindowMs - (Date.now() - (rateLimits.get(userId)?.timestamps[0] ?? 0))) / 60000
-    );
-    await ctx.reply(`Rate limit exceeded. You can download ${config.rateLimitMax} videos per hour. Try again in ${remaining} minutes.`);
-    return;
-  }
-
   createOrUpdateUser(userId, ctx.from!.username ?? null, ctx.from!.first_name ?? null);
   activeDownloads.set(userId, true);
 
