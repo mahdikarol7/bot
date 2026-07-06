@@ -232,11 +232,21 @@ export async function queueDownload(ctx: Context, url: string): Promise<void> {
       updateCacheHit(videoId);
       await ctx.reply("Video found in cache, sending...");
       const caption = `Cached video\n\nSize: ${formatSize(cached.file_size)}`;
+      let cachedPath = cached.file_path;
+      let cachedNeedsCleanup = false;
+      if (cached.file_size > TELEGRAM_MAX_SIZE) {
+        try {
+          cachedPath = await compressVideo(cached.file_path);
+          cachedNeedsCleanup = true;
+        } catch {}
+      }
       try {
-        await ctx.api.sendVideo(ctx.chat!.id, new InputFile(cached.file_path), { caption });
+        await ctx.api.sendVideo(ctx.chat!.id, new InputFile(cachedPath), { caption });
       } catch (sendErr) {
-        logger.error({ err: sendErr, userId }, "Failed to send cached video via Telegram");
+        logger.error({ err: sendErr, userId }, "Failed to send cached video");
         await ctx.reply("Failed to send the cached video.");
+      } finally {
+        if (cachedNeedsCleanup && fs.existsSync(cachedPath)) fs.unlinkSync(cachedPath);
       }
       return;
     }
@@ -246,10 +256,21 @@ export async function queueDownload(ctx: Context, url: string): Promise<void> {
       await ctx.reply("This video is already being downloaded. You'll receive it when ready.");
       const filePath = await lockResult;
       if (filePath && fs.existsSync(filePath)) {
+        let lockPath = filePath;
+        let lockNeedsCleanup = false;
+        const lockStat = fs.statSync(filePath);
+        if (lockStat.size > TELEGRAM_MAX_SIZE) {
+          try {
+            lockPath = await compressVideo(filePath);
+            lockNeedsCleanup = true;
+          } catch {}
+        }
         try {
-          await ctx.api.sendVideo(ctx.chat!.id, new InputFile(filePath));
+          await ctx.api.sendVideo(ctx.chat!.id, new InputFile(lockPath));
         } catch {
           await ctx.reply("Failed to send the video.");
+        } finally {
+          if (lockNeedsCleanup && fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
         }
       } else {
         await ctx.reply("The download failed. Please try again later.");
