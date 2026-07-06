@@ -34,6 +34,9 @@ export async function downloadVideo(
       "--no-playlist",
       "--no-overwrites",
       "--no-warnings",
+      "--no-check-certificates",
+      "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "--extractor-args", "youtube:player_client=tv_embedded,web",
       "--merge-output-format", "mp4",
       "--print-json",
     ];
