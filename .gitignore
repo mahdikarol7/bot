@@ -16,6 +16,9 @@ ENV/
 # Environment variables
 .env
 
+# YouTube cookies (contains session data)
+cookies.txt
+
 # IDE
 .vscode/
 .idea/

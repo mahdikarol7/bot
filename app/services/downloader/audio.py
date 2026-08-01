@@ -55,7 +55,20 @@ class AudioDownloader:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
+            # Anti-bot settings
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web", "android"],
+                    "player_skip": ["webpage"],
+                }
+            },
         }
+
+        # Add cookies if file exists
+        cookies_file = Path("cookies.txt")
+        if cookies_file.exists():
+            ydl_opts["cookiefile"] = str(cookies_file)
 
         loop = asyncio.get_event_loop()
 

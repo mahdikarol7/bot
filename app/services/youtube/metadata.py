@@ -4,10 +4,12 @@ Extracts video information using yt-dlp without downloading.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import yt_dlp
 from loguru import logger
 
+from app.config.settings import get_settings
 from app.utils.file_utils import format_duration
 
 
@@ -24,6 +26,37 @@ class VideoMetadata:
     available_formats: list[dict]
 
 
+def _get_ydl_opts() -> dict:
+    """Build yt-dlp options with cookies and anti-bot settings."""
+    settings = get_settings()
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": False,
+        # Anti-bot settings
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web", "android"],
+                "player_skip": ["webpage"],
+            }
+        },
+        "http_headers": {
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.youtube.com/",
+        },
+    }
+
+    # Add cookies if file exists
+    cookies_file = Path("cookies.txt")
+    if cookies_file.exists():
+        opts["cookiefile"] = str(cookies_file)
+        logger.info("Using cookies file: {}", cookies_file)
+
+    return opts
+
+
 async def extract_metadata(url: str) -> VideoMetadata:
     """Extract video metadata from a YouTube URL.
 
@@ -38,12 +71,7 @@ async def extract_metadata(url: str) -> VideoMetadata:
     """
     logger.info("Extracting metadata for: {}", url)
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": False,
-    }
+    ydl_opts = _get_ydl_opts()
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = await _extract_info(ydl, url)

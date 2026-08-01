@@ -95,6 +95,17 @@ nssm start YouTubeBot
 | RATE_LIMIT_PER_USER | Requests per window | 5 |
 | RATE_LIMIT_WINDOW_SECONDS | Rate limit window | 60 |
 
+## YouTube Cookies (Important!)
+
+YouTube may block your bot with "Sign in to confirm you're not a bot" error. To fix this:
+
+1. Install the **"Get cookies.txt LOCALLY"** browser extension ([Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) / [Firefox](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/))
+2. Go to [youtube.com](https://www.youtube.com) and make sure you're logged in
+3. Click the extension icon and export cookies
+4. Upload the `cookies.txt` file to the project root (same folder as `main.py`)
+
+The bot will automatically use this cookies file for all YouTube requests.
+
 ## Admin Commands
 
 | Command | Description |
