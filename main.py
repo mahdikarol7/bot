@@ -45,6 +45,20 @@ def setup_logging() -> None:
     )
 
 
+def setup_cookies() -> None:
+    """Write cookies.txt from COOKIES_CONTENT environment variable."""
+    import os
+    cookies_content = os.environ.get("COOKIES_CONTENT", "")
+    if cookies_content:
+        cookies_file = Path("cookies.txt")
+        cookies_file.write_text(cookies_content, encoding="utf-8")
+        logger.info("YouTube cookies loaded from environment variable")
+    elif Path("cookies.txt").exists():
+        logger.info("Using existing cookies.txt file")
+    else:
+        logger.warning("No cookies found - YouTube may block requests")
+
+
 async def main() -> None:
     """Main entry point for the bot."""
     settings = get_settings()
@@ -52,6 +66,9 @@ async def main() -> None:
 
     setup_logging()
     logger.info("Starting YouTube Downloader Bot...")
+
+    # Setup YouTube cookies
+    setup_cookies()
 
     # Initialize database
     await init_db()
