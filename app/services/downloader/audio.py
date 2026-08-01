@@ -49,34 +49,56 @@ class AudioDownloader:
         if on_progress:
             on_progress("Downloading audio...")
 
-        ydl_opts = {
-            "format": format_id,
-            "outtmpl": str(download_dir / "audio.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            # Anti-bot settings
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["web", "android"],
-                    "player_skip": ["webpage"],
-                }
-            },
-        }
+        player_clients = [
+            ["mweb"],
+            ["web_creator"],
+            ["web"],
+            ["android"],
+        ]
 
-        # Add cookies if file exists
-        cookies_file = Path("cookies.txt")
-        if cookies_file.exists():
-            ydl_opts["cookiefile"] = str(cookies_file)
-
+        last_error = None
         loop = asyncio.get_event_loop()
 
-        def _run_download() -> None:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+        for clients in player_clients:
+            try:
+                logger.info("Downloading audio with client: {}", clients)
+                ydl_opts = {
+                    "format": format_id,
+                    "outtmpl": str(download_dir / "audio.%(ext)s"),
+                    "quiet": True,
+                    "no_warnings": True,
+                    "noplaylist": True,
+                    "user_agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": clients,
+                        }
+                    },
+                }
 
-        await loop.run_in_executor(None, _run_download)
+                # Add cookies if file exists
+                cookies_file = Path("cookies.txt")
+                if cookies_file.exists():
+                    ydl_opts["cookiefile"] = str(cookies_file)
+
+                def _run_download() -> None:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+
+                await loop.run_in_executor(None, _run_download)
+                break  # Success, exit the loop
+
+            except Exception as e:
+                last_error = e
+                logger.warning("Client {} failed: {}", clients, str(e)[:100])
+                continue
+        else:
+            # All clients failed
+            raise last_error or Exception("All download methods failed")
 
         if cancel_event and cancel_event.is_set():
             raise asyncio.CancelledError()

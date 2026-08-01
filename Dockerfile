@@ -13,6 +13,8 @@ COPY pyproject.toml .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --break-system-packages .
+# Upgrade yt-dlp to latest version (important for YouTube support)
+RUN pip install --no-cache-dir --break-system-packages --upgrade yt-dlp
 
 # Copy application code
 COPY . .

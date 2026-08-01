@@ -29,7 +29,9 @@ async def handle_youtube_url(message: Message, state) -> None:
     except Exception as e:
         logger.error("Failed to extract metadata: {}", e)
         error_text = str(e).lower()
-        if "private" in error_text:
+        if "sign in" in error_text or "confirm you" in error_text or "bot" in error_text:
+            text = "🤖 YouTube is blocking bot requests. Please try again later."
+        elif "private" in error_text:
             text = "🔒 This video is private."
         elif "unavailable" in error_text or "removed" in error_text:
             text = "🚫 This video is unavailable or has been removed."

@@ -111,42 +111,60 @@ class VideoDownloader:
         filename: str,
         cancel_event: asyncio.Event | None = None,
     ) -> Path:
-        """Download a single format using yt-dlp."""
+        """Download a single format using yt-dlp with multiple client fallbacks."""
         output_template = str(output_dir / f"{filename}.%(ext)s")
 
-        ydl_opts = {
-            "format": format_id,
-            "outtmpl": output_template,
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "progress_hooks": [],
-            # Anti-bot settings
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["web", "android"],
-                    "player_skip": ["webpage"],
-                }
-            },
-        }
+        player_clients = [
+            ["mweb"],
+            ["web_creator"],
+            ["web"],
+            ["android"],
+        ]
 
-        # Add cookies if file exists
-        cookies_file = Path("cookies.txt")
-        if cookies_file.exists():
-            ydl_opts["cookiefile"] = str(cookies_file)
-
+        last_error = None
         loop = asyncio.get_event_loop()
 
-        def _run_download() -> None:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+        for clients in player_clients:
+            try:
+                logger.info("Downloading with client: {}", clients)
+                ydl_opts = {
+                    "format": format_id,
+                    "outtmpl": output_template,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "noplaylist": True,
+                    "progress_hooks": [],
+                    "user_agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    "extractor_args": {
+                        "youtube": {
+                            "player_client": clients,
+                        }
+                    },
+                }
 
-        await loop.run_in_executor(None, _run_download)
+                # Add cookies if file exists
+                cookies_file = Path("cookies.txt")
+                if cookies_file.exists():
+                    ydl_opts["cookiefile"] = str(cookies_file)
 
-        # Find the downloaded file
-        for f in output_dir.iterdir():
-            if f.stem == filename:
-                return f
+                def _run_download() -> None:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
 
-        raise FileNotFoundError(f"Downloaded file not found in {output_dir}")
+                await loop.run_in_executor(None, _run_download)
+
+                # Find the downloaded file
+                for f in output_dir.iterdir():
+                    if f.stem == filename:
+                        return f
+
+            except Exception as e:
+                last_error = e
+                logger.warning("Client {} failed: {}", clients, str(e)[:100])
+                continue
+
+        raise last_error or Exception("All download methods failed")

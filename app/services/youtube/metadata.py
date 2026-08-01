@@ -9,7 +9,6 @@ from pathlib import Path
 import yt_dlp
 from loguru import logger
 
-from app.config.settings import get_settings
 from app.utils.file_utils import format_duration
 
 
@@ -26,20 +25,32 @@ class VideoMetadata:
     available_formats: list[dict]
 
 
-def _get_ydl_opts() -> dict:
-    """Build yt-dlp options with cookies and anti-bot settings."""
-    settings = get_settings()
+# Player clients to try in order
+_PLAYER_CLIENTS = [
+    ["mweb"],
+    ["web_creator"],
+    ["web"],
+    ["android"],
+    ["ios"],
+    ["tv"],
+]
+
+
+def _get_ydl_opts(player_client: list[str]) -> dict:
+    """Build yt-dlp options with anti-bot settings."""
     opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "extract_flat": False,
-        # Anti-bot settings
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android"],
-                "player_skip": ["webpage"],
+                "player_client": player_client,
             }
         },
         "http_headers": {
@@ -52,13 +63,15 @@ def _get_ydl_opts() -> dict:
     cookies_file = Path("cookies.txt")
     if cookies_file.exists():
         opts["cookiefile"] = str(cookies_file)
-        logger.info("Using cookies file: {}", cookies_file)
+        logger.debug("Using cookies file")
 
     return opts
 
 
 async def extract_metadata(url: str) -> VideoMetadata:
     """Extract video metadata from a YouTube URL.
+
+    Tries multiple player clients to bypass YouTube restrictions.
 
     Args:
         url: YouTube video or shorts URL.
@@ -67,27 +80,45 @@ async def extract_metadata(url: str) -> VideoMetadata:
         VideoMetadata with all extracted info.
 
     Raises:
-        yt_dlp.utils.DownloadError: If video cannot be accessed.
+        Exception: If all extraction methods fail.
     """
     logger.info("Extracting metadata for: {}", url)
 
-    ydl_opts = _get_ydl_opts()
+    import asyncio
+    loop = asyncio.get_event_loop()
+    last_error = None
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = await _extract_info(ydl, url)
+    for clients in _PLAYER_CLIENTS:
+        try:
+            logger.info("Trying player client: {}", clients)
+            opts = _get_ydl_opts(clients)
 
-    formats = info.get("formats", [])
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = await loop.run_in_executor(
+                    None, lambda: ydl.extract_info(url, download=False)
+                )
 
-    return VideoMetadata(
-        video_id=info.get("id", ""),
-        title=info.get("title", "Unknown"),
-        channel=info.get("channel", info.get("uploader", "Unknown")),
-        thumbnail=info.get("thumbnail", ""),
-        duration=info.get("duration", 0),
-        duration_formatted=format_duration(info.get("duration", 0)),
-        view_count=info.get("view_count", 0),
-        available_formats=formats,
-    )
+            formats = info.get("formats", [])
+            logger.info(
+                "Success with client {}: {} formats found", clients, len(formats)
+            )
+
+            return VideoMetadata(
+                video_id=info.get("id", ""),
+                title=info.get("title", "Unknown"),
+                channel=info.get("channel", info.get("uploader", "Unknown")),
+                thumbnail=info.get("thumbnail", ""),
+                duration=info.get("duration", 0),
+                duration_formatted=format_duration(info.get("duration", 0)),
+                view_count=info.get("view_count", 0),
+                available_formats=formats,
+            )
+        except Exception as e:
+            last_error = e
+            logger.warning("Client {} failed: {}", clients, str(e)[:100])
+            continue
+
+    raise last_error or Exception("All extraction methods failed")
 
 
 async def _extract_info(ydl: yt_dlp.YoutubeDL, url: str) -> dict:
