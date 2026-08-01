@@ -16,7 +16,6 @@ from app.utils.file_utils import format_views
 router = Router(name="url_handler")
 
 
-@router.message(YouTubeURLFilter(), DownloadStates.waiting_for_url)
 @router.message(YouTubeURLFilter())
 async def handle_youtube_url(message: Message, state) -> None:
     """Handle a YouTube URL sent by the user."""

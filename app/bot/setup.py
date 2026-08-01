@@ -17,7 +17,6 @@ from app.bot.handlers import (
 )
 from app.bot.middlewares.database import DatabaseMiddleware
 from app.bot.middlewares.rate_limit import RateLimitMiddleware
-from app.bot.states.download import DownloadStates
 from app.config.settings import get_settings
 
 
@@ -46,14 +45,4 @@ def create_dispatcher(session_factory: async_sessionmaker) -> Dispatcher:
     dp.include_router(url_handler.router)
     dp.include_router(cancel_handler.router)
 
-    # Set initial state for URL handling
-    dp.startup.register(_on_startup)
-
     return dp
-
-
-async def _on_startup(dispatcher: Dispatcher) -> None:
-    """Set initial FSM state."""
-    await dispatcher.storage.set_state(
-        state=DownloadStates.waiting_for_url,
-    )
