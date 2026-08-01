@@ -16,9 +16,6 @@ ENV/
 # Environment variables
 .env
 
-# YouTube cookies (contains session data)
-cookies.txt
-
 # IDE
 .vscode/
 .idea/
@@ -37,5 +34,4 @@ Thumbs.db
 # Test
 .coverage
 htmlcov/
-.pytest_cache/
-cookies.txt 
+.pytest_cache/ 
