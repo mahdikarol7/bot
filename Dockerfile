@@ -1,19 +1,28 @@
-FROM node:20-slim
+FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --break-system-packages yt-dlp
-
+# Set working directory
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm install
+# Copy requirements first for Docker layer caching
+COPY pyproject.toml .
 
+# Install Python dependencies
+RUN pip install --no-cache-dir --break-system-packages .
+
+# Copy application code
 COPY . .
-RUN npm run build
 
-CMD ["node", "dist/index.js"]
+# Create data directories
+RUN mkdir -p data/downloads data/cache logs
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Run the bot
+CMD ["python", "main.py"]
